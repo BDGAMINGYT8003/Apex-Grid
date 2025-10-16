@@ -4,6 +4,7 @@ const { Client, Collection, Events, GatewayIntentBits, REST, Routes } = require(
 const chalk = require('chalk');
 const cron = require('node-cron');
 const { getUserProfile, setUserProfile } = require('./data/database.js');
+const { performMonthlyReset } = require('./data/reset.js');
 
 // Securely retrieve bot token and client ID from environment variables
 const { BOT_TOKEN, CLIENT_ID } = process.env;
@@ -37,7 +38,6 @@ for (const file of commandFiles) {
     const filePath = path.join(commandsPath, file);
     try {
         const command = require(filePath);
-        // Set the command in the Collection with the key as the command name and the value as the exported module
         if ('data' in command && 'execute' in command) {
             client.commands.set(command.data.name, command);
             commandsToDeploy.push(command.data.toJSON());
@@ -57,13 +57,10 @@ const rest = new REST({ version: '10' }).setToken(BOT_TOKEN);
 (async () => {
     try {
         console.log(chalk.cyan(`Started refreshing ${commandsToDeploy.length} application (/) commands.`));
-
-        // The put method is used to fully refresh all commands globally with the current set
         const data = await rest.put(
             Routes.applicationCommands(CLIENT_ID),
             { body: commandsToDeploy },
         );
-
         console.log(chalk.cyan(`Successfully reloaded ${data.length} application (/) commands.`));
     } catch (error) {
         console.error(chalk.red('Error during command deployment:'), error);
@@ -71,28 +68,39 @@ const rest = new REST({ version: '10' }).setToken(BOT_TOKEN);
 })();
 
 
-// --- EVENT HANDLER: InteractionCreate ---
+// --- CENTRAL INTERACTION ROUTER ---
 client.on(Events.InteractionCreate, async interaction => {
-    // Handle slash commands
-    if (!interaction.isChatInputCommand()) return;
-
-    const command = interaction.client.commands.get(interaction.commandName);
+    const commandName = interaction.isCommand() ? interaction.commandName : interaction.customId.split('_')[0];
+    const command = interaction.client.commands.get(commandName);
 
     if (!command) {
-        console.error(`No command matching ${interaction.commandName} was found.`);
-        await interaction.reply({ content: 'Error: This command does not exist.', ephemeral: true });
+        console.error(`No command matching '${commandName}' was found.`);
         return;
     }
 
     try {
-        // Delegate execution to the command's file
-        await command.execute(interaction);
+        if (interaction.isChatInputCommand()) {
+            await command.execute(interaction);
+        } else if (interaction.isButton()) {
+            if (command.handleButton) {
+                await command.handleButton(interaction);
+            }
+        } else if (interaction.isStringSelectMenu()) {
+            if (command.handleSelectMenu) {
+                await command.handleSelectMenu(interaction);
+            }
+        } else if (interaction.isModalSubmit()) {
+            if (command.handleModal) {
+                await command.handleModal(interaction);
+            }
+        }
     } catch (error) {
-        console.error(chalk.red(`Error executing command ${interaction.commandName}:`), error);
+        console.error(chalk.red(`Error handling interaction for command '${commandName}':`), error);
+        const errorMessage = { content: 'There was an error while executing this interaction!', ephemeral: true };
         if (interaction.replied || interaction.deferred) {
-            await interaction.followUp({ content: 'There was an error while executing this command!', ephemeral: true });
+            await interaction.followUp(errorMessage);
         } else {
-            await interaction.reply({ content: 'There was an error while executing this command!', ephemeral: true });
+            await interaction.reply(errorMessage);
         }
     }
 });
@@ -100,78 +108,56 @@ client.on(Events.InteractionCreate, async interaction => {
 
 // --- EVENT HANDLER: messageCreate (XP and CI Token Accrual) ---
 client.on(Events.MessageCreate, async message => {
-    // Ignore bots and DMs
     if (message.author.bot || !message.guild) return;
 
-    const guildId = message.guild.id;
-    const userId = message.author.id;
+    const profile = getUserProfile(message.guild.id, message.author.id);
+    if (!profile || !profile.onboarded) return;
 
-    const profile = getUserProfile(guildId, userId);
-
-    // Ignore users who haven't been onboarded yet
-    if (!profile) return;
-
-    // --- XP GAIN ---
     const now = Date.now();
-    const timeSinceLastMessage = now - (profile.lastMessageTimestamp || 0);
-
-    // Rate limit: 1 message per 15 seconds for XP gain
-    if (timeSinceLastMessage < 15000) return;
+    if (now - (profile.lastMessageTimestamp || 0) < 15000) return;
 
     let xpGained = 0;
     const messageLength = message.content.length;
 
-    // Scale XP by message length
     if (messageLength > 5 && messageLength <= 25) xpGained = 1;
     else if (messageLength > 25 && messageLength <= 100) xpGained = 2;
     else if (messageLength > 100) xpGained = 5;
 
-    // Bonus for using official server emojis/stickers (once per message)
     if (message.content.match(/<a?:\w+:\d+>/) || message.stickers.size > 0) {
         xpGained += 1;
     }
 
     if (xpGained > 0) {
         profile.xp += xpGained;
-    }
 
-    profile.lastMessageTimestamp = now;
+        const xpForNextLevel = 100 + (0.5 * profile.level);
+        if (profile.xp >= xpForNextLevel) {
+            profile.level++;
+            profile.xp -= xpForNextLevel;
 
-    // --- LEVEL UP & CI TOKEN REWARD ---
-    const xpForNextLevel = 100 + (0.5 * profile.level);
-    if (profile.xp >= xpForNextLevel) {
-        profile.level++;
-        profile.xp -= xpForNextLevel; // Reset XP for the new level, keeping the remainder
+            const ciGained = 1 + (0.5 * (profile.level - 2));
+            const today = new Date().toISOString().slice(0, 10);
+            if (profile.dailyCiEarned.date !== today) {
+                profile.dailyCiEarned = { amount: 0, date: today };
+            }
 
-        // Calculate CI Tokens gained
-        const ciGained = 1 + (0.5 * (profile.level - 2)); // Level 2 gives 1 token, Level 3 gives 1.5, etc.
+            const remainingDailyCap = 70 - profile.dailyCiEarned.amount;
+            const ciToAward = Math.min(ciGained, remainingDailyCap);
 
-        // Check daily cap
-        const today = new Date().toISOString().slice(0, 10);
-        if (profile.dailyCiEarned.date !== today) {
-            profile.dailyCiEarned = { amount: 0, date: today };
-        }
-
-        const remainingDailyCap = 70 - profile.dailyCiEarned.amount;
-        const ciToAward = Math.min(ciGained, remainingDailyCap);
-
-        if (ciToAward > 0) {
-            profile.ciTokens += ciToAward;
-            profile.dailyCiEarned.amount += ciToAward;
-
-            // Notify user of level up and rewards
-            try {
-                const levelUpMessage = `Congratulations, you've reached **Level ${profile.level}** and earned **${ciToAward.toFixed(1)} CI Tokens**!`;
-                await message.author.send(levelUpMessage);
-            } catch (error) {
-                console.log(`Could not DM user ${userId} about their level up.`);
-                // Optionally, send in channel if DMs are closed
-                // message.reply(levelUpMessage).then(msg => setTimeout(() => msg.delete(), 10000));
+            if (ciToAward > 0) {
+                profile.ciTokens += ciToAward;
+                profile.dailyCiEarned.amount += ciToAward;
+                try {
+                    await message.author.send(`Congratulations, you've reached **Level ${profile.level}** and earned **${ciToAward.toFixed(1)} CI Tokens**!`);
+                } catch (error) {
+                    console.log(`Could not DM user ${message.author.id} about their level up.`);
+                }
             }
         }
     }
 
-    setUserProfile(guildId, userId, profile);
+    profile.lastMessageTimestamp = now;
+    setUserProfile(message.guild.id, message.author.id, profile);
 });
 
 
@@ -179,21 +165,14 @@ client.on(Events.MessageCreate, async message => {
 client.once(Events.ClientReady, c => {
     console.log(chalk.bold.green(`\n--- Apex Grid Bot is online! ---`));
     console.log(chalk.green(`Logged in as ${c.user.tag}`));
-    console.log(chalk.cyan(`Operating in ${client.guilds.cache.size} servers.`));
 });
 
 
-const { performMonthlyReset } = require('./data/reset.js');
-
 // --- MONTHLY RESET SCHEDULER ---
-// '0 0 1 * *' = at 00:00 on the 1st day of every month
 cron.schedule('0 0 1 * *', () => {
     console.log(chalk.bold.magenta('--- Initiating Monthly Reset Protocol ---'));
     performMonthlyReset(client);
-}, {
-    scheduled: true,
-    timezone: "UTC"
-});
+}, { scheduled: true, timezone: "UTC" });
 
 
 // --- LOGIN ---

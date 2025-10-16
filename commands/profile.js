@@ -1,44 +1,8 @@
-const { SlashCommandBuilder, ContainerBuilder, TextDisplayBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ComponentType, MessageFlags } = require('discord.js');
+const { SlashCommandBuilder, ContainerBuilder, TextDisplayBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, MessageFlags } = require('discord.js');
 const { getUserProfile, setUserProfile } = require('../data/database');
 const { getDefaultMarketStock } = require('../data/marketItems');
 
-// --- PROFILE HELPER FUNCTIONS ---
-
-/**
- * Calculates the XP needed to reach the next level.
- * @param {number} currentLevel The user's current level.
- * @returns {number} The XP required for the next level.
- */
-function getXpForNextLevel(currentLevel) {
-    if (currentLevel === 0) return 100; // Base XP for level 1
-    return 100 + (0.5 * currentLevel);
-}
-
-/**
- * Creates the Components v2 profile card.
- * @param {object} user The user object from the interaction.
- * @param {object} profile The user's profile data.
- * @returns {ContainerBuilder} The constructed profile card component.
- */
-function createProfileCard(user, profile) {
-    const xpNeeded = getXpForNextLevel(profile.level);
-    const progress = Math.floor((profile.xp / xpNeeded) * 20); // 20-block progress bar
-    const progressBar = '█'.repeat(progress) + '░'.repeat(20 - progress);
-
-    const profileCard = new ContainerBuilder()
-        .setAccentColor(0x5865F2) // Discord Blurple
-        .addTextDisplayComponents(
-            new TextDisplayBuilder().setContent(`**${user.username}'s Apex Grid Profile**`),
-            new TextDisplayBuilder().setContent(`**Level:** ${profile.level}`),
-            new TextDisplayBuilder().setContent(`**CI Tokens:** ${profile.ciTokens.toFixed(1)} <:token:0000000000>`), // Placeholder for a token emoji
-            new TextDisplayBuilder().setContent(`**XP:** ${profile.xp.toFixed(2)} / ${xpNeeded.toFixed(2)}`),
-            new TextDisplayBuilder().setContent(`\`[${progressBar}]\``)
-        );
-
-    return profileCard;
-}
-
-// --- ONBOARDING TUTORIAL ---
+// --- TUTORIAL CONTENT ---
 const tutorialSteps = [
     {
         content: "Welcome to the Apex Grid! Before you begin, let's go over the basics.",
@@ -58,76 +22,59 @@ const tutorialSteps = [
     }
 ];
 
-async function startOnboarding(interaction) {
-    let currentStep = 0;
+// --- HELPER FUNCTIONS ---
 
-    const getTutorialMessage = (stepIndex) => {
-        const step = tutorialSteps[stepIndex];
-        const row = new ActionRowBuilder().addComponents(
-            new ButtonBuilder()
-                .setCustomId(`tutorial_next_${stepIndex}`)
-                .setLabel(step.buttonLabel)
-                .setStyle(ButtonStyle.Primary)
-        );
-        const container = new ContainerBuilder().addTextDisplayComponents(
-            new TextDisplayBuilder().setContent(step.content)
-        );
-        return {
-            components: [container, row],
-            flags: MessageFlags.IsComponentsV2,
-            ephemeral: true
-        };
+/**
+ * Generates the message payload for a given tutorial step.
+ * @param {number} stepIndex The index of the tutorial step.
+ * @returns {object} The message payload with Components v2.
+ */
+function getTutorialMessage(stepIndex) {
+    const step = tutorialSteps[stepIndex];
+    const isLastStep = stepIndex === tutorialSteps.length - 1;
+
+    const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+            .setCustomId(`profile_tutorial_${stepIndex + 1}`) // e.g., profile_tutorial_1
+            .setLabel(step.buttonLabel)
+            .setStyle(ButtonStyle.Primary)
+    );
+
+    const container = new ContainerBuilder().addTextDisplayComponents(
+        new TextDisplayBuilder().setContent(step.content)
+    );
+
+    return {
+        components: [container, row],
+        flags: MessageFlags.IsComponentsV2,
+        ephemeral: true
     };
+}
 
-    await interaction.reply(getTutorialMessage(currentStep));
+/**
+ * Creates the Components v2 profile card.
+ * @param {object} user The user object from the interaction.
+ * @param {object} profile The user's profile data.
+ * @returns {ContainerBuilder} The constructed profile card component.
+ */
+function createProfileCard(user, profile) {
+    const xpNeeded = 100 + (0.5 * profile.level);
+    const progress = Math.floor((profile.xp / xpNeeded) * 20);
+    const progressBar = '█'.repeat(progress) + '░'.repeat(20 - progress);
 
-    const collector = interaction.channel.createMessageComponentCollector({
-        componentType: ComponentType.Button,
-        filter: i => i.user.id === interaction.user.id && i.customId.startsWith('tutorial_next_'),
-        time: 60000 // 1 minute to complete tutorial
-    });
-
-    collector.on('collect', async i => {
-        currentStep++;
-        if (currentStep < tutorialSteps.length) {
-            await i.update(getTutorialMessage(currentStep));
-        } else {
-            // Tutorial finished, create profile
-            const newUserProfile = {
-                onboarded: true,
-                level: 1,
-                xp: 0,
-                ciTokens: 0,
-                dailyCiEarned: { amount: 0, date: null },
-                marketStock: getDefaultMarketStock(),
-                lastMessageTimestamp: 0,
-            };
-            setUserProfile(interaction.guildId, interaction.user.id, newUserProfile);
-
-            const finalMessage = new ContainerBuilder()
-                .setAccentColor(0x00FF00)
-                .addTextDisplayComponents(
-                    new TextDisplayBuilder().setContent("✅ **Onboarding Complete!**\nYour profile has been created. You can now use all bot commands. Try running `/profile` again to see your new rank card!")
-                );
-
-            await i.update({
-                components: [finalMessage],
-                flags: MessageFlags.IsComponentsV2,
-                ephemeral: true
-            });
-            collector.stop();
-        }
-    });
-
-    collector.on('end', collected => {
-        if (collected.size === 0) {
-            interaction.followUp({ content: 'Tutorial timed out.', ephemeral: true });
-        }
-    });
+    return new ContainerBuilder()
+        .setAccentColor(0x5865F2)
+        .addTextDisplayComponents(
+            new TextDisplayBuilder().setContent(`**${user.username}'s Apex Grid Profile**`),
+            new TextDisplayBuilder().setContent(`**Level:** ${profile.level}`),
+            new TextDisplayBuilder().setContent(`**CI Tokens:** ${profile.ciTokens.toFixed(1)}`),
+            new TextDisplayBuilder().setContent(`**XP:** ${profile.xp.toFixed(2)} / ${xpNeeded.toFixed(2)}`),
+            new TextDisplayBuilder().setContent(`\`[${progressBar}]\``)
+        );
 }
 
 
-// --- SLASH COMMAND ---
+// --- COMMAND DEFINITION ---
 module.exports = {
     data: new SlashCommandBuilder()
         .setName('profile')
@@ -136,11 +83,12 @@ module.exports = {
             option.setName('user')
                 .setDescription('The user whose profile you want to see.')
                 .setRequired(false)),
+
+    // --- SLASH COMMAND EXECUTION ---
     async execute(interaction) {
         const targetUser = interaction.options.getUser('user') || interaction.user;
         const guildId = interaction.guildId;
 
-        // Prevent bot from looking up its own or other bots' profiles
         if (targetUser.bot) {
             const botProfileMessage = new ContainerBuilder().addTextDisplayComponents(new TextDisplayBuilder().setContent("Bots do not participate in the Apex Grid."));
             return interaction.reply({ components: [botProfileMessage], flags: MessageFlags.IsComponentsV2, ephemeral: true });
@@ -149,22 +97,61 @@ module.exports = {
         const userProfile = getUserProfile(guildId, targetUser.id);
 
         if (!userProfile) {
-            // If the user running the command is the one without a profile, start onboarding
             if (targetUser.id === interaction.user.id) {
-                return startOnboarding(interaction);
+                // Start onboarding for the user who ran the command
+                const initialMessage = getTutorialMessage(0);
+                return interaction.reply(initialMessage);
             } else {
-                // If checking another user who hasn't started
                 const notStartedMessage = new ContainerBuilder().addTextDisplayComponents(new TextDisplayBuilder().setContent(`${targetUser.username} hasn't started their Apex Grid journey yet.`));
                 return interaction.reply({ components: [notStartedMessage], flags: MessageFlags.IsComponentsV2, ephemeral: true });
             }
         }
 
-        // If profile exists, display it
         const profileCard = createProfileCard(targetUser, userProfile);
         await interaction.reply({
             components: [profileCard],
             flags: MessageFlags.IsComponentsV2,
             ephemeral: true
         });
+    },
+
+    // --- BUTTON INTERACTION HANDLER ---
+    async handleButton(interaction) {
+        const customIdParts = interaction.customId.split('_'); // e.g., ['profile', 'tutorial', '1']
+        const action = customIdParts[1];
+
+        if (action === 'tutorial') {
+            const nextStepIndex = parseInt(customIdParts[2], 10);
+
+            if (nextStepIndex < tutorialSteps.length) {
+                // If there are more steps, show the next one
+                const nextMessage = getTutorialMessage(nextStepIndex);
+                await interaction.update(nextMessage);
+            } else {
+                // This was the "Got it!" button, finish onboarding
+                const newUserProfile = {
+                    onboarded: true,
+                    level: 1,
+                    xp: 0,
+                    ciTokens: 0,
+                    dailyCiEarned: { amount: 0, date: null },
+                    marketStock: getDefaultMarketStock(),
+                    lastMessageTimestamp: 0,
+                };
+                setUserProfile(interaction.guildId, interaction.user.id, newUserProfile);
+
+                const finalMessage = new ContainerBuilder()
+                    .setAccentColor(0x00FF00)
+                    .addTextDisplayComponents(
+                        new TextDisplayBuilder().setContent("✅ **Onboarding Complete!**\nYour profile has been created. You can now use all bot commands. Try running `/profile` again to see your new rank card!")
+                    );
+
+                await interaction.update({
+                    components: [finalMessage],
+                    flags: MessageFlags.IsComponentsV2,
+                    ephemeral: true
+                });
+            }
+        }
     },
 };

@@ -1,4 +1,4 @@
-const { SlashCommandBuilder, ContainerBuilder, TextDisplayBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ComponentType, MessageFlags } = require('discord.js');
+const { SlashCommandBuilder, ContainerBuilder, TextDisplayBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, MessageFlags } = require('discord.js');
 const { getGuildProfiles } = require('../data/database');
 
 /**
@@ -11,8 +11,7 @@ const { getGuildProfiles } = require('../data/database');
 async function createLeaderboardPage(sortedUsers, page, client) {
     const usersPerPage = 10;
     const startIndex = page * usersPerPage;
-    const endIndex = startIndex + usersPerPage;
-    const pageUsers = sortedUsers.slice(startIndex, endIndex);
+    const pageUsers = sortedUsers.slice(startIndex, startIndex + usersPerPage);
 
     const leaderboardLines = await Promise.all(pageUsers.map(async (user, index) => {
         const rank = startIndex + index + 1;
@@ -32,12 +31,12 @@ async function createLeaderboardPage(sortedUsers, page, client) {
 
     const buttons = new ActionRowBuilder().addComponents(
         new ButtonBuilder()
-            .setCustomId('leaderboard_prev')
+            .setCustomId(`leaderboard_prev_${page}`)
             .setLabel('Previous')
             .setStyle(ButtonStyle.Primary)
             .setDisabled(page === 0),
         new ButtonBuilder()
-            .setCustomId('leaderboard_next')
+            .setCustomId(`leaderboard_next_${page}`)
             .setLabel('Next')
             .setStyle(ButtonStyle.Primary)
             .setDisabled(page >= totalPages - 1)
@@ -54,13 +53,11 @@ module.exports = {
     data: new SlashCommandBuilder()
         .setName('leaderboard')
         .setDescription('Shows the server-wide monthly XP leaderboard.'),
-    async execute(interaction) {
-        const guildId = interaction.guildId;
-        const allProfiles = getGuildProfiles(guildId);
 
-        const sortedUsers = Object.entries(allProfiles)
+    async execute(interaction) {
+        const sortedUsers = Object.entries(getGuildProfiles(interaction.guildId))
             .map(([userId, profile]) => ({ userId, profile }))
-            .filter(user => user.profile.onboarded) // Only show users who have completed onboarding
+            .filter(user => user.profile.onboarded)
             .sort((a, b) => b.profile.xp - a.profile.xp);
 
         if (sortedUsers.length === 0) {
@@ -68,32 +65,28 @@ module.exports = {
             return interaction.reply({ components: [noUsersMessage], flags: MessageFlags.IsComponentsV2, ephemeral: true });
         }
 
-        let currentPage = 0;
-        const messagePayload = await createLeaderboardPage(sortedUsers, currentPage, interaction.client);
-        const response = await interaction.reply(messagePayload);
+        const initialPage = await createLeaderboardPage(sortedUsers, 0, interaction.client);
+        await interaction.reply(initialPage);
+    },
 
-        const collector = response.createMessageComponentCollector({
-            componentType: ComponentType.Button,
-            filter: i => i.user.id === interaction.user.id,
-            time: 120000 // 2 minutes
-        });
+    async handleButton(interaction) {
+        const customIdParts = interaction.customId.split('_'); // e.g., ['leaderboard', 'next', '0']
+        const action = customIdParts[1];
+        const currentPage = parseInt(customIdParts[2], 10);
+        let newPage = currentPage;
 
-        collector.on('collect', async i => {
-            if (i.customId === 'leaderboard_next') {
-                currentPage++;
-            } else if (i.customId === 'leaderboard_prev') {
-                currentPage--;
-            }
+        if (action === 'next') {
+            newPage++;
+        } else if (action === 'prev') {
+            newPage--;
+        }
 
-            const updatedPayload = await createLeaderboardPage(sortedUsers, currentPage, interaction.client);
-            await i.update(updatedPayload);
-        });
+        const sortedUsers = Object.entries(getGuildProfiles(interaction.guildId))
+            .map(([userId, profile]) => ({ userId, profile }))
+            .filter(user => user.profile.onboarded)
+            .sort((a, b) => b.profile.xp - a.profile.xp);
 
-        collector.on('end', async () => {
-            // Remove buttons after collector expires
-            const finalPayload = await createLeaderboardPage(sortedUsers, currentPage, interaction.client);
-            finalPayload.components.pop(); // Remove the button row
-            await interaction.editReply(finalPayload);
-        });
+        const updatedPage = await createLeaderboardPage(sortedUsers, newPage, interaction.client);
+        await interaction.update(updatedPage);
     },
 };

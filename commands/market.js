@@ -69,7 +69,7 @@ module.exports = {
 
     async handleModal(interaction) {
         const customIdParts = interaction.customId.split('_');
-        const selectedItemId = customIdParts[2];
+        const selectedItemId = customIdParts.slice(2).join('_'); // Correctly join multi-word IDs
         const selectedItem = marketItems.find(item => item.id === selectedItemId);
         const quantity = parseInt(interaction.fields.getTextInputValue('quantity'), 10);
 
@@ -109,8 +109,8 @@ module.exports = {
         }
 
         if (action === 'confirm') {
-            const selectedItemId = customIdParts[2];
-            const quantity = parseInt(customIdParts[3], 10);
+            const quantity = parseInt(customIdParts.pop(), 10); // Last part is always quantity
+            const selectedItemId = customIdParts.slice(2).join('_'); // The rest is the ID
             const selectedItem = marketItems.find(item => item.id === selectedItemId);
             const profile = getUserProfile(interaction.guildId, interaction.user.id);
             const totalCost = selectedItem.cost * quantity;

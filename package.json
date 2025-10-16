@@ -1,0 +1,26 @@
+{
+  "name": "app",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/BDGAMINGYT8003/Apex-Grid.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/BDGAMINGYT8003/Apex-Grid/issues"
+  },
+  "homepage": "https://github.com/BDGAMINGYT8003/Apex-Grid#readme",
+  "dependencies": {
+    "chalk": "^4.1.2",
+    "discord.js": "^14.23.2",
+    "node-cron": "^4.2.1"
+  }
+}
